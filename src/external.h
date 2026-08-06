@@ -1,6 +1,6 @@
 #ifndef XOVI_PUBLIC_API
 #define XOVI_PUBLIC_API
-#define XOVI_VERSION "0.2.0"
+#define XOVI_VERSION "0.3.0"
 #include <stdbool.h>
 
 #define LP1_F_TYPE_EXPORT 1
@@ -11,6 +11,14 @@
 #define METADATA_TYPE_INT 1
 #define METADATA_TYPE_BOOL 2
 #define METADATA_TYPE_STRING 3
+
+#define XOVI_EXTENSION_DISCOVERED 1
+#define XOVI_EXTENSION_DLOPEN_FAILED 2
+#define XOVI_EXTENSION_SHOULDLOAD_FAILED 3
+#define XOVI_EXTENSION_CONDITION_FAILED 4
+#define XOVI_EXTENSION_DEPENDENCY_FAILED 5
+#define XOVI_EXTENSION_LINK_FAILED 6
+#define XOVI_EXTENSION_INITIALIZED 7
 
 typedef union {
     int i;
@@ -51,5 +59,13 @@ struct XoViEnvironment {
 
     void (*createMetadataSearchingIterator)(struct ExtensionMetadataIterator *iterator, const char *metadataEntryName);
     struct XoviMetadataEntry *(*nextFunctionMetadataEntry)(struct ExtensionMetadataIterator *iterator);
+
+    // 0.3.0 API - runtime extension state:
+    int (*getScannedExtensionCount)();
+    int (*getScannedExtensionNames)(const char **table, int maxCount);
+    int (*getExtensionVersion)(const char *extension, unsigned char *major, unsigned char *minor, unsigned char *patch);
+    struct XoviMetadataEntry *(*getExtensionMetadataEntry)(const char *extension, const char *metadataEntryName);
+    int (*getExtensionLoadState)(const char *extension);
+    const char *(*getExtensionLoadError)(const char *extension);
 };
 #endif

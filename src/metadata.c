@@ -4,6 +4,8 @@
 
 extern struct LinkingPass1Result *XOVI_DL_EXTENSIONS;
 
+struct XoviMetadataEntry *getMetadataEntryFromChain(struct XoviMetadataEntry **chain, const char *name);
+
 int getExtensionCount() {
     return HASH_COUNT(XOVI_DL_EXTENSIONS);
 }
@@ -15,6 +17,56 @@ int getExtensionNames(const char **names, int maxCount) {
         names[i] = ext->baseName;
     }
     return i;
+}
+
+int getScannedExtensionCount() {
+    return HASH_COUNT(XOVI_EXTENSION_LOAD_RECORDS);
+}
+
+int getScannedExtensionNames(const char **names, int maxCount) {
+    struct ExtensionLoadRecord *ext;
+    int i = 0;
+    for(ext = XOVI_EXTENSION_LOAD_RECORDS; ext != NULL && i < maxCount; ext = ext->hh.next, i++) {
+        names[i] = ext->baseName;
+    }
+    return i;
+}
+
+int getExtensionVersion(const char *extension, unsigned char *major, unsigned char *minor, unsigned char *patch) {
+    struct ExtensionLoadRecord *record = findExtensionLoadRecordByName(extension);
+    if(record == NULL || !record->hasVersion) {
+        return -1;
+    }
+    if(major) *major = record->version.major;
+    if(minor) *minor = record->version.minor;
+    if(patch) *patch = record->version.patch;
+    return 0;
+}
+
+struct XoviMetadataEntry *getExtensionMetadataEntry(const char *extension, const char *metadataEntryName) {
+    hash_t hash = hashString(extension);
+    struct LinkingPass1Result *ext;
+    HASH_FIND_HT(XOVI_DL_EXTENSIONS, &hash, ext);
+    if(ext == NULL || ext->metadataChainRoot == NULL || ext->rootMetadataChainLength < 1 || ext->metadataChainRoot[0] == NULL) {
+        return NULL;
+    }
+    return getMetadataEntryFromChain(ext->metadataChainRoot[0], metadataEntryName);
+}
+
+int getExtensionLoadState(const char *extension) {
+    struct ExtensionLoadRecord *record = findExtensionLoadRecordByName(extension);
+    if(record == NULL) {
+        return -1;
+    }
+    return record->loadState;
+}
+
+const char *getExtensionLoadError(const char *extension) {
+    struct ExtensionLoadRecord *record = findExtensionLoadRecordByName(extension);
+    if(record == NULL) {
+        return NULL;
+    }
+    return record->loadError;
 }
 
 int getExtensionFunctionCount(const char *key) {
@@ -101,6 +153,12 @@ struct XoviMetadataEntry *getMetadataEntryForFunction(const char *extension, con
 }
 
 void createMetadataSearchingIterator(struct _ExtensionMetadataIterator *iterator, const char *metadataEntryName) {
+    if(XOVI_DL_EXTENSIONS == NULL) {
+        memset(iterator, 0, sizeof(struct _ExtensionMetadataIterator));
+        iterator->query = metadataEntryName;
+        iterator->terminated = true;
+        return;
+    }
     iterator->query = metadataEntryName;
     iterator->extensionRoot = XOVI_DL_EXTENSIONS;
     iterator->extensionName = XOVI_DL_EXTENSIONS->baseName;
@@ -168,4 +226,3 @@ struct XoviMetadataEntry *nextFunctionMetadataEntry(struct _ExtensionMetadataIte
 
     return NULL; // No more metadata entries found
 }
-

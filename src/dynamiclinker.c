@@ -1,9 +1,54 @@
 // Load all extensions the software depends on, but DO NOT LINK yet
 #include "dynamiclinker.h"
 #include "metadata.h"
+#include <stdlib.h>
 
 struct LinkingPass1Result *XOVI_DL_EXTENSIONS = NULL;
+struct ExtensionLoadRecord *XOVI_EXTENSION_LOAD_RECORDS = NULL;
 static struct OverrideFunctionTrace *OVERRIDEN_FUNCTIONS = NULL;
+
+static struct ExtensionLoadRecord *ensureExtensionLoadRecord(const char *baseName, const char *path) {
+    hash_t hash = hashString(baseName);
+    struct ExtensionLoadRecord *record;
+    HASH_FIND_HT(XOVI_EXTENSION_LOAD_RECORDS, &hash, record);
+    if(record == NULL) {
+        record = calloc(1, sizeof(struct ExtensionLoadRecord));
+        record->extensionNameHash = hash;
+        record->baseName = strdup(baseName);
+        record->loadState = XOVI_EXTENSION_DISCOVERED;
+        HASH_ADD_HT(XOVI_EXTENSION_LOAD_RECORDS, extensionNameHash, record);
+    }
+    if(path != NULL) {
+        free(record->path);
+        record->path = strdup(path);
+    }
+    return record;
+}
+
+void recordExtensionLoadState(const char *baseName, const char *path, int loadState, const char *loadError) {
+    struct ExtensionLoadRecord *record = ensureExtensionLoadRecord(baseName, path);
+    record->loadState = loadState;
+    free(record->loadError);
+    record->loadError = NULL;
+    if(loadError != NULL && *loadError != 0) {
+        record->loadError = strdup(loadError);
+    }
+}
+
+void recordExtensionVersion(const char *baseName, unsigned char major, unsigned char minor, unsigned char patch) {
+    struct ExtensionLoadRecord *record = ensureExtensionLoadRecord(baseName, NULL);
+    record->version.major = major;
+    record->version.minor = minor;
+    record->version.patch = patch;
+    record->hasVersion = true;
+}
+
+struct ExtensionLoadRecord *findExtensionLoadRecordByName(const char *baseName) {
+    hash_t hash = hashString(baseName);
+    struct ExtensionLoadRecord *record;
+    HASH_FIND_HT(XOVI_EXTENSION_LOAD_RECORDS, &hash, record);
+    return record;
+}
 
 int getTerminatedChainLength(void **data, void *terminator){
     ptrint_t *asInt = (ptrint_t *) data;
@@ -18,14 +63,18 @@ int getTerminatedChainLength(void **data, void *terminator){
 // baseName needs to be preallocated!
 void loadExtensionPass1(char *extensionSOFile, char *baseName){
     LOG("[W]: Pass 1: Begin loading extension %s from file %s\n", baseName, extensionSOFile);
+    recordExtensionLoadState(baseName, extensionSOFile, XOVI_EXTENSION_DISCOVERED, NULL);
     void *extension = dlopen(extensionSOFile, RTLD_NOW);
     if(!extension) {
+        const char *error = dlerror();
+        recordExtensionLoadState(baseName, extensionSOFile, XOVI_EXTENSION_DLOPEN_FAILED, error);
 #ifdef LOAD_FAIL_ABORT
-        LOG_F("[F]: Pass 1: Couldn't load extension:\n%s\n", dlerror());
+        LOG_F("[F]: Pass 1: Couldn't load extension:\n%s\n", error);
         exit(1);
 #else
-        LOG("[I]: Pass 1: Failed to load extension:\n%s\n", dlerror());
+        LOG("[I]: Pass 1: Failed to load extension:\n%s\n", error);
         LOG("[I]: Pass 1: Skipping extension %s.\n", baseName);
+        free(baseName);
         return;
 #endif
     }
@@ -33,6 +82,9 @@ void loadExtensionPass1(char *extensionSOFile, char *baseName){
     if(shouldLoad){
         if(!shouldLoad()){
             LOG("[I]: Pass 1: The extension refused being loaded. Skipping.");
+            recordExtensionLoadState(baseName, extensionSOFile, XOVI_EXTENSION_SHOULDLOAD_FAILED, "_xovi_shouldLoad returned false.");
+            dlclose(extension);
+            free(baseName);
             return;
         }
     }
@@ -66,6 +118,12 @@ void loadExtensionPass1(char *extensionSOFile, char *baseName){
             thisExtension->version.patch
         );
     }
+    recordExtensionVersion(
+        baseName,
+        thisExtension->version.major,
+        thisExtension->version.minor,
+        thisExtension->version.patch
+    );
 
     thisExtension->metadataChainRoot = dlsym(extension, "METADATAVALUES");
     if(!thisExtension->metadataChainRoot) {
@@ -278,6 +336,7 @@ static void defineOverride(char *extensionBaseName, char *symbolName, void *newA
     }
     function->data = pivotSymbol(symbolName, newAddress, extra);
     if(function->data == NULL) {
+        recordExtensionLoadState(extensionBaseName, NULL, XOVI_EXTENSION_LINK_FAILED, "Failed to define override trampoline.");
         LOG_F("[F]: Pass 2a: Failed to hook function!");
         exit(1);
     }
@@ -321,10 +380,11 @@ void requireExtension(hash_t hash, const char *nameFallback, unsigned char major
     if(soFile->dependencyConstructor) soFile->dependencyConstructor();
     if(soFile->constructor) soFile->constructor();
     soFile->loaded = 1;
+    recordExtensionLoadState(soFile->baseName, NULL, XOVI_EXTENSION_INITIALIZED, NULL);
 }
 
 void requireExtensionByName(const char *name, unsigned char major, unsigned char minor, unsigned char patch) {
-    requireExtension(hashString((char *) name), NULL, major, minor, patch);
+    requireExtension(hashString((char *) name), name, major, minor, patch);
 }
 
 void unloadPass1Result(struct LinkingPass1Result *currentExtension) {
@@ -360,8 +420,33 @@ void loadAllExtensions(struct XoViEnvironment *env){
                     if(resolveImport(currentExtension, currentFunction->functionName, true) == NULL) {
                         // If the function does not exist, delete unload this extension.
                         LOG("[I]: Pass 2a: Condition not met for %s. Unloading...\n", currentExtension->baseName);
+                        recordExtensionLoadState(currentExtension->baseName, NULL, XOVI_EXTENSION_CONDITION_FAILED, "A condition symbol could not be resolved.");
                         unloadPass1Result(currentExtension);
                         // Continue iteration - unload all items that depended on this
+                        changesDone = true;
+                        break;
+                    }
+                }
+            }
+        }
+    } while(changesDone);
+    LOG("[I]: Pass 2: Starting pass 2a2 (dependency validation)...\n");
+    do {
+        LOG("[I]: Pass 2a2: Iterating over modules...\n");
+        changesDone = false;
+        struct LinkingPass1Result *tmp;
+        HASH_ITER(hh, XOVI_DL_EXTENSIONS, currentExtension, tmp) {
+            struct LinkingPass1SOFunction *currentFunction;
+            for(
+                currentFunction = *currentExtension->functions;
+                currentFunction != NULL;
+                currentFunction = currentFunction->hh.next
+            ) {
+                if(currentFunction->type == LP1_F_TYPE_IMPORT){
+                    if(resolveImport(currentExtension, currentFunction->functionName, true) == NULL) {
+                        LOG("[I]: Pass 2a2: Dependency not met for %s. Unloading...\n", currentExtension->baseName);
+                        recordExtensionLoadState(currentExtension->baseName, NULL, XOVI_EXTENSION_DEPENDENCY_FAILED, "An import symbol could not be resolved.");
+                        unloadPass1Result(currentExtension);
                         changesDone = true;
                         break;
                     }

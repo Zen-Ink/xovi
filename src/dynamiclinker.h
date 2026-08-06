@@ -28,6 +28,18 @@ struct SemVer {
     unsigned char major, minor, patch;
 };
 
+struct ExtensionLoadRecord {
+    hash_t extensionNameHash;
+    char *baseName;
+    char *path;
+    int loadState;
+    char *loadError;
+    bool hasVersion;
+    struct SemVer version;
+
+    UT_hash_handle hh;
+};
+
 struct LinkingPass1Result {
     hash_t soFileNameRootHash;
     char loaded;
@@ -57,6 +69,12 @@ struct OverrideFunctionTrace {
 
     UT_hash_handle hh;
 };
+
+extern struct ExtensionLoadRecord *XOVI_EXTENSION_LOAD_RECORDS;
+
+void recordExtensionLoadState(const char *baseName, const char *path, int loadState, const char *loadError);
+void recordExtensionVersion(const char *baseName, unsigned char major, unsigned char minor, unsigned char patch);
+struct ExtensionLoadRecord *findExtensionLoadRecordByName(const char *baseName);
 
 void loadExtensionPass1(char *extensionSOFile, char *baseName);
 void loadAllExtensions(struct XoViEnvironment *env);

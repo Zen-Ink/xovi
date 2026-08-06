@@ -49,6 +49,41 @@ XOVI iterates over the extensions 4 times, in order to:
 - Build the links between imports and exports [Pass 2c]
 - Invoke all constructors and resolve the dependency map [Init]
 
+## Runtime extension state API
+
+Starting with the `0.3.0` public API, this modified XOVI exposes runtime scan/load state through the `XoViEnvironment`.
+The older metadata functions keep their original meaning and only enumerate extensions that made it into XOVI's runtime metadata/linking structures:
+
+```c
+getExtensionCount()
+getExtensionNames()
+```
+
+The scan-state API enumerates every extension file XOVI saw in `extensions.d`, including entries that failed before initialization:
+
+```c
+getScannedExtensionCount()
+getScannedExtensionNames()
+getExtensionVersion()
+getExtensionMetadataEntry()
+getExtensionLoadState()
+getExtensionLoadError()
+```
+
+Possible load states:
+
+```c
+XOVI_EXTENSION_DISCOVERED
+XOVI_EXTENSION_DLOPEN_FAILED
+XOVI_EXTENSION_SHOULDLOAD_FAILED
+XOVI_EXTENSION_CONDITION_FAILED
+XOVI_EXTENSION_DEPENDENCY_FAILED
+XOVI_EXTENSION_LINK_FAILED
+XOVI_EXTENSION_INITIALIZED
+```
+
+This API only describes the current process. Static inventory, disabled extensions, pending enable/disable changes, compatibility checks, and package metadata should be handled by reading each extension's `manifest.json`.
+
 ## Hooks
 
 In order to hook functions, XOVI inserts trampolines at the start of each hooked function.
@@ -118,6 +153,31 @@ char *override$strdup(char *string) { // Override functions have to be prefixed 
 To build the extension, run xovigen to generate xovi.c and xovi.h files:
 
 `python3 util/xovigen.py -o xovi.c -H xovi.h example.xovi`
+
+`xovigen.py` can also generate a static extension manifest from `global-meta` entries:
+
+```sh
+python3 util/xovigen.py -o xovi.c -H xovi.h -m manifest.json --manifest-entry example.so example.xovi
+```
+
+Example:
+
+```xovi
+version 0.1.0
+
+global-meta
+    id = "example"
+    name = "Example Extension"
+    description = "Example manifest metadata"
+    requiresXovi = ">=0.3.0"
+    requiresExtensions = "helper-extension:>=0.2.0"
+    architectures = "aarch64"
+    entry = "example.so"
+end
+```
+
+The generated `manifest.json` uses a `requires` object for XOVI, extension, xochitl, and architecture constraints.
+`depends-on module:major.minor.patch` is a hard XOVI initialization dependency; for dependencies that should only be checked by external package management, use `global-meta` `requiresExtensions = "module:>=major.minor.patch"`.
 
 Note: The xovi.h file is not strictly necessary.
 If your application does not import any symbols, you can skip generating it by omitting the `-H xovi.h` parameter.

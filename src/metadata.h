@@ -20,6 +20,13 @@ struct _ExtensionMetadataIterator {
 
 int getExtensionCount();
 int getExtensionNames(const char **table, int maxCount);
+int getScannedExtensionCount();
+int getScannedExtensionNames(const char **table, int maxCount);
+int getExtensionVersion(const char *extension, unsigned char *major, unsigned char *minor, unsigned char *patch);
+struct XoviMetadataEntry *getExtensionMetadataEntry(const char *extension, const char *metadataEntryName);
+int getExtensionLoadState(const char *extension);
+const char *getExtensionLoadError(const char *extension);
+
 int getExtensionFunctionCount(const char *key);
 int getExtensionFunctionNames(const char *extension, const char **table, int maxCount);
 

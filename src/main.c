@@ -1,6 +1,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "dynamiclinker.h"
 #include "external.h"
 #include "metadata.h"
@@ -9,6 +11,7 @@
 #define FILES_ROOT filesRootDir
 
 static const char *extRootDir = NULL, *filesRootDir = NULL;
+static int xoviInitialized = 0;
 
 #ifdef DEBUGFUNC
 #define CONSTRUCTOR
@@ -68,6 +71,12 @@ static char *concat(const char *a, const char *b) {
 }
 
 void CONSTRUCTOR _ext_init() {
+    if(xoviInitialized) {
+        LOG("[I]: XOVI initialization skipped - already initialized in this process.\n");
+        return;
+    }
+    xoviInitialized = 1;
+    
     const char *xoviRoot;
     if((xoviRoot = getenv("XOVI_ROOT")) == NULL) xoviRoot = XOVI_ROOT_DEFAULT;
     extRootDir = concat(xoviRoot, "/extensions.d/");
@@ -90,6 +99,13 @@ void CONSTRUCTOR _ext_init() {
     environment->createMetadataSearchingIterator = (void (*)(struct ExtensionMetadataIterator *, const char *)) createMetadataSearchingIterator;
     environment->nextFunctionMetadataEntry = (struct XoviMetadataEntry *(*)(struct ExtensionMetadataIterator *)) nextFunctionMetadataEntry;
 
+    environment->getScannedExtensionCount = getScannedExtensionCount;
+    environment->getScannedExtensionNames = getScannedExtensionNames;
+    environment->getExtensionVersion = getExtensionVersion;
+    environment->getExtensionMetadataEntry = getExtensionMetadataEntry;
+    environment->getExtensionLoadState = getExtensionLoadState;
+    environment->getExtensionLoadError = getExtensionLoadError;
+
     // At this point none of the functions could have been hooked.
     // It's safe to use stdlib.
     DIR *rootDirOfExtensions;
@@ -100,8 +116,9 @@ void CONSTRUCTOR _ext_init() {
         while((entry = readdir(rootDirOfExtensions)) != NULL) {
             if(entry->d_type == DT_REG || entry->d_type == DT_LNK){
                 // LOG("Loading: %s\n", entry->d_name);
+                char *baseName = findBaseName(entry->d_name);
                 char *fullName = findFullName(entry->d_name);
-                loadExtensionPass1(fullName, findBaseName(entry->d_name));
+                loadExtensionPass1(fullName, baseName);
                 free(fullName);
             }
         }

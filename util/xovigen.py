@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from enum import Enum
 from typing import Any
 import os
+import json
 import re
 
 # from itertools import batched
@@ -95,6 +96,7 @@ class HeaderState:
     overrides: list[str] = list_field()
     dependencies: list[tuple[str, int, int, int]] = list_field()
     metadata: dict[HeaderAddition, list[MetadataEntry]] = field(default_factory=dict)
+    global_metadata_values: dict[str, Any] = field(default_factory=dict)
     metadata_name_table = ''
     metadata_name_table_offset = 0
 
@@ -104,6 +106,13 @@ class HeaderState:
     def add_metadata_entry_for_entry(self, entry: HeaderAddition, name: str, type_: MetadataType, value: Any):
         if entry not in self.metadata:
             self.metadata[entry] = []
+        if entry is GLOBAL_METADATA:
+            if type_ is MetadataType.Int:
+                self.global_metadata_values[name] = int(value)
+            elif type_ is MetadataType.Bool:
+                self.global_metadata_values[name] = str(value).lower() == 'true'
+            elif type_ is MetadataType.String:
+                self.global_metadata_values[name] = value.decode('utf-8', errors='replace') if type(value) is bytes else str(value)
         name_offset = self.metadata_name_table_offset
         self.metadata_name_table_offset += len(name) + 1
         self.metadata_name_table += name + "\\0"
@@ -276,6 +285,77 @@ extern const struct XoViEnvironment *Environment;
             """.strip() + '\n'
         )
 
+    def emit_manifest(self, input_path: str, entry: str | None, enabled: bool | None):
+        meta = self.global_metadata_values
+        default_id = os.path.splitext(os.path.basename(input_path))[0]
+        extension_id = str(meta.get("id", default_id))
+        package_type = str(meta.get("type", "extension"))
+        extension_name = str(meta.get("name", extension_id))
+        version = self.version if self.version is not None else (0, 1, 0)
+        manifest_enabled = enabled if enabled is not None else bool(meta.get("enabled", True))
+        default_entry_suffix = ".qmd" if package_type == "qmd" else ".so"
+
+        def split_list(value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return value
+            return [item.strip() for item in str(value).replace('\n', ',').split(',') if item.strip()]
+
+        def split_dependency_map(value):
+            dependencies = {}
+            for item in split_list(value):
+                if ':' in item:
+                    module, requirement = item.split(':', 1)
+                else:
+                    module, requirement = item, ">=0.0.0"
+                module = module.strip()
+                requirement = requirement.strip()
+                if module:
+                    dependencies[module] = requirement or ">=0.0.0"
+            return dependencies
+
+        api_match = re.search(r'#define\s+XOVI_VERSION\s+"([^"]+)"', GLOBAL_HEADER or "")
+        default_xovi_requirement = f">={api_match.group(1)}" if api_match else ">=0.3.0"
+        xovi_requirement = str(
+            meta.get(
+                "requiresXovi",
+                meta.get("xovi", meta.get("xoviApi", default_xovi_requirement))
+            )
+        )
+        manifest_dependencies = {
+            module: f">={major}.{minor}.{patch}"
+            for module, major, minor, patch in self.dependencies
+        }
+        manifest_dependencies.update(
+            split_dependency_map(meta.get("requiresExtensions", meta.get("dependencies")))
+        )
+
+        manifest = {
+            "manifestVersion": 1,
+            "type": package_type,
+            "id": extension_id,
+            "name": extension_name,
+            "version": f"{version[0]}.{version[1]}.{version[2]}",
+            "requires": {
+                "xovi": xovi_requirement,
+                "extensions": manifest_dependencies,
+                "xochitl": split_list(meta.get("xochitlVersions")),
+                "architectures": split_list(meta.get("architectures")),
+            },
+            "entry": entry or str(meta.get("entry", f"{extension_id}{default_entry_suffix}")),
+            "enabled": manifest_enabled,
+        }
+
+        if "order" in meta:
+            manifest["order"] = int(meta["order"])
+
+        for key in ("author", "description", "license", "homepage", "source"):
+            if key in meta:
+                manifest[key] = meta[key]
+
+        return json.dumps(manifest, indent=2, ensure_ascii=True) + "\n"
+
 
 def format_array(array, separator='\n', fmt='{}'):
     return separator.join(fmt.format(x) for x in array)
@@ -411,6 +491,9 @@ def main():
     argparse.add_argument('-o', '--output', help="Output xovi module base", required=True)
     argparse.add_argument('-H', '--output-header', help="Output xovi header")
     argparse.add_argument('-a', '--architecture', help="The architecture for some arch-dependent metadata fields")
+    argparse.add_argument('-m', '--manifest-output', help="Output extension manifest JSON")
+    argparse.add_argument('--manifest-entry', help="Entry .so filename to write into the manifest")
+    argparse.add_argument('--manifest-enabled', choices=('true', 'false'), help="Initial enabled value for the generated manifest")
     argparse.add_argument('input', help="The .xovi file defining all imports and exports of all the files in this project.")
     args = argparse.parse_args()
 
@@ -428,6 +511,10 @@ def main():
     if args.output_header is not None:
         with open(args.output_header, 'w') as output:
             output.write(h)
+    if args.manifest_output is not None:
+        enabled = None if args.manifest_enabled is None else args.manifest_enabled == 'true'
+        with open(args.manifest_output, 'w') as output:
+            output.write(header.emit_manifest(args.input, args.manifest_entry, enabled))
 
 
 if __name__ == "__main__": main()
