@@ -8,6 +8,33 @@ import re
 
 # from itertools import batched
 from itertools import islice
+
+
+def c_string_literal(value: str | bytes | bytearray) -> str:
+    """Return a C string literal that represents the exact input bytes.
+
+    Octal escapes always use three digits.  This is important for embedded NUL
+    bytes: ``\\0`` followed by a digit in the range 0-7 would otherwise be
+    consumed as one longer octal escape by the C compiler.
+    """
+    if isinstance(value, str):
+        data = value.encode('utf-8')
+    else:
+        data = bytes(value)
+
+    escaped = []
+    for byte in data:
+        if byte == ord('"'):
+            escaped.append('\\"')
+        elif byte == ord('\\'):
+            escaped.append('\\\\')
+        elif 0x20 <= byte <= 0x7e:
+            escaped.append(chr(byte))
+        else:
+            escaped.append(f'\\{byte:03o}')
+    return '"' + ''.join(escaped) + '"'
+
+
 def batched(iterable, n, *, strict=False):
     # batched('ABCDEFG', 3) → ABC DEF G
     if n < 1:
@@ -97,8 +124,7 @@ class HeaderState:
     dependencies: list[tuple[str, int, int, int]] = list_field()
     metadata: dict[HeaderAddition, list[MetadataEntry]] = field(default_factory=dict)
     global_metadata_values: dict[str, Any] = field(default_factory=dict)
-    metadata_name_table = ''
-    metadata_name_table_offset = 0
+    metadata_name_table: bytearray = field(default_factory=bytearray)
 
     override_prefix: str = "override$"
     lang: str = "c"
@@ -113,15 +139,16 @@ class HeaderState:
                 self.global_metadata_values[name] = str(value).lower() == 'true'
             elif type_ is MetadataType.String:
                 self.global_metadata_values[name] = value.decode('utf-8', errors='replace') if type(value) is bytes else str(value)
-        name_offset = self.metadata_name_table_offset
-        self.metadata_name_table_offset += len(name) + 1
-        self.metadata_name_table += name + "\\0"
+        name_bytes = name.encode('utf-8')
+        name_offset = len(self.metadata_name_table)
+        self.metadata_name_table.extend(name_bytes)
+        self.metadata_name_table.append(0)
         # If metadata value is a string, add it to the name table too, then remap
         if type_ is MetadataType.String:
-            output_value = str(value) if type(value) is not bytes else ''.join('\\x' + ('0' if e < 0x10 else '') + hex(e)[2:] for e in value)
-            value = (len(value), self.metadata_name_table_offset)
-            self.metadata_name_table_offset += value[0] + 1
-            self.metadata_name_table += output_value + "\\0"
+            value_bytes = bytes(value) if isinstance(value, bytes) else str(value).encode('utf-8')
+            value = (len(value_bytes), len(self.metadata_name_table))
+            self.metadata_name_table.extend(value_bytes)
+            self.metadata_name_table.append(0)
         self.metadata[entry].append(MetadataEntry(name_offset, type_, value))
 
     def check_dependency(self, referenced_global: str):
@@ -212,7 +239,7 @@ class HeaderState:
             print('Warning: No version defined in the XOVI project file.')
 
         link_table.insert(0, len(link_table))
-        zero = '\\0'
+        link_table_names = b''.join(name.encode('utf-8') + b'\0' for name in names_table) + b'\0'
         nl_tab_sep = ',\n    '
         return (
             f"""
@@ -227,12 +254,12 @@ extern "C" {{
 {format_array(deps)}
 
 // XOVI metadata
-__attribute__((section(".xovi"))) const char *LINKTABLENAMES = "{format_array(names_table, '', '{}' + zero)}{zero}";
+__attribute__((section(".xovi"))) const char *LINKTABLENAMES = {c_string_literal(link_table_names)};
 __attribute__((section(".xovi"))) const void *LINKTABLEVALUES[] = {{ {format_array(link_table, ', ', '(void *) {}')} }};
 __attribute__((section(".xovi"))) const struct XoViEnvironment *Environment = 0;
 {version}
 
-__attribute__((section(".xovi_info"))) const char __XOVIMETADATANAMES[] = "{self.metadata_name_table}";
+__attribute__((section(".xovi_info"))) const char __XOVIMETADATANAMES[] = {c_string_literal(self.metadata_name_table)};
 
 // Raw Metadata Entries
 {map_array((x for y in self.metadata.values() for x in y), lambda e: e.emit())}
@@ -250,7 +277,7 @@ __attribute__((section(".xovi"))) const struct XoviMetadataEntry **METADATAVALUE
 
 // Dependency constructor
 void _xovi_depconstruct() {{
-    {map_array(self.dependencies, lambda e: f"Environment->requireExtension{e!r};".replace("'", '"'))}
+    {map_array(self.dependencies, lambda e: f"Environment->requireExtension({c_string_literal(e[0])}, {e[1]}, {e[2]}, {e[3]});")}
 }}
 
 #ifdef __cplusplus
