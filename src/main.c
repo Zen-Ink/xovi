@@ -1,8 +1,10 @@
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "dynamiclinker.h"
 #include "external.h"
 #include "metadata.h"
@@ -13,10 +15,67 @@
 static const char *extRootDir = NULL, *filesRootDir = NULL;
 static int xoviInitialized = 0;
 
+void _ext_init(void);
+
+static const char *pathBaseName(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash == NULL ? path : slash + 1;
+}
+
+static int isCurrentXoviObject(const char *candidate, const Dl_info *self) {
+    if(self != NULL && self->dli_fname != NULL) {
+        struct stat candidateStat, selfStat;
+        if(stat(candidate, &candidateStat) == 0 && stat(self->dli_fname, &selfStat) == 0 &&
+           candidateStat.st_dev == selfStat.st_dev && candidateStat.st_ino == selfStat.st_ino) {
+            return 1;
+        }
+        if(strcmp(candidate, self->dli_fname) == 0) return 1;
+        if(strchr(candidate, '/') == NULL &&
+           strcmp(candidate, pathBaseName(self->dli_fname)) == 0) {
+            return 1;
+        }
+        return 0;
+    }
+
+    return strcmp(pathBaseName(candidate), "xovi.so") == 0;
+}
+
+static void configureChildInjection(void) {
+    const char *setting = getenv("XOVI_INJECT_CHILDREN");
+    const char *preload = getenv("LD_PRELOAD");
+    if((setting != NULL && strcmp(setting, "1") == 0) ||
+       preload == NULL || *preload == '\0') return;
+
+    Dl_info self = {0};
+    Dl_info *selfPtr = dladdr((void *)&_ext_init, &self) != 0 ? &self : NULL;
+    char *copy = strdup(preload);
+    char *sanitized = calloc(strlen(preload) + 1, 1);
+    if(copy == NULL || sanitized == NULL) {
+        free(copy);
+        free(sanitized);
+        return;
+    }
+
+    size_t length = 0;
+    char *save = NULL;
+    for(char *entry = strtok_r(copy, " :\t\r\n", &save);
+        entry != NULL;
+        entry = strtok_r(NULL, " :\t\r\n", &save)) {
+        if(isCurrentXoviObject(entry, selfPtr)) continue;
+        if(length != 0) sanitized[length++] = ':';
+        size_t entryLength = strlen(entry);
+        memcpy(sanitized + length, entry, entryLength);
+        length += entryLength;
+    }
+
+    if(length == 0) unsetenv("LD_PRELOAD");
+    else setenv("LD_PRELOAD", sanitized, 1);
+    free(sanitized);
+    free(copy);
+}
+
 #ifdef DEBUGFUNC
 #define CONSTRUCTOR
-
-void _ext_init();
 
 int testFunc() {
     printf("In playground\n");
@@ -76,6 +135,7 @@ void CONSTRUCTOR _ext_init() {
         return;
     }
     xoviInitialized = 1;
+    configureChildInjection();
     
     const char *xoviRoot;
     if((xoviRoot = getenv("XOVI_ROOT")) == NULL) xoviRoot = XOVI_ROOT_DEFAULT;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(xovi VERSION 0.1.1 LANGUAGES C ASM)
+project(xovi VERSION 0.3.1 LANGUAGES C ASM)
 
 option(XOVI_SANDBOX "Build a sandbox executable instead of an LD_PRELOAD library." OFF)
 option(XOVI_DEBUG "Enable verbose debugging" OFF)

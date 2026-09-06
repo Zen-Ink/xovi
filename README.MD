@@ -49,6 +49,17 @@ XOVI iterates over the extensions 4 times, in order to:
 - Build the links between imports and exports [Pass 2c]
 - Invoke all constructors and resolve the dependency map [Init]
 
+## Child applications
+
+XOVI is removed from the inherited `LD_PRELOAD` list by default, while other preload libraries are kept. Set `XOVI_INJECT_CHILDREN=1` when starting the target application to let child applications inherit XOVI:
+
+```sh
+XOVI_INJECT_CHILDREN=1 LD_PRELOAD=/home/root/xovi/xovi.so xochitl
+```
+
+This affects applications started with `exec`; a process created with only `fork` still shares its parent's loaded libraries.
+Restarting the systemd service is unaffected because the service manager supplies a fresh `LD_PRELOAD` value to each new host process.
+
 ## Runtime extension state API
 
 Starting with the `0.3.0` public API, this modified XOVI exposes runtime scan/load state through the `XoViEnvironment`.

@@ -1,6 +1,6 @@
 #ifndef XOVI_PUBLIC_API
 #define XOVI_PUBLIC_API
-#define XOVI_VERSION "0.3.0"
+#define XOVI_VERSION "0.3.1"
 #include <stdbool.h>
 
 #define LP1_F_TYPE_EXPORT 1
